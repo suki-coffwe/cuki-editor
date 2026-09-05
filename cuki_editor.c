@@ -473,6 +473,7 @@ void editorSave()
 
 /*** find ***/
 
+
 void editorFindCallback(char *query, int key)
 {
 	static int last_match = -1;
@@ -701,7 +702,8 @@ void editorDrawMessageBar(struct abuf *ab)
 	abAppend(ab, "\x1b[K", 3);
 	int msglen = strlen(E.statusmsg);
 	if (msglen > E.screencols) msglen = E.screencols;
-	if (msglen && time(NULL) - E.statusmsg_time < 5)
+//	if (msglen && time(NULL) - E.statusmsg_time < 5)	//This is for timeout check, not currently needed and is replaced by no timeout.
+	if (msglen)
 		abAppend(ab, E.statusmsg, msglen);
 }
 
@@ -734,7 +736,7 @@ void editorSetStatusMessage(const char *fmt, ...) {
 	va_start(ap, fmt);
 	vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
 	va_end(ap);
-	E.statusmsg_time = time(NULL);
+//	E.statusmsg_time = time(NULL);		//I hate timeouts!
 }
 
 
@@ -852,6 +854,7 @@ void editorProcessKeypress()
 			editorInsertNewline();
 			break;
 
+/*
 		case CTRL_KEY('x'):
 			if (E.dirty && quit_times > 0)
 			{
@@ -859,6 +862,35 @@ void editorProcessKeypress()
 				"Press Ctrl-Q %d more times to quit.", quit_times);
 				quit_times--;
 				return;
+			}
+			write(STDOUT_FILENO, "\x1b[2J", 4);
+			write(STDOUT_FILENO, "\x1b[H", 3);
+			exit(0);
+			break;
+*/
+		case CTRL_KEY('x'):
+			if (E.dirty)
+			{
+				editorSetStatusMessage("Save modified buffer? [y/n]: ");
+				editorRefreshScreen();
+				int c = editorReadKey();
+				if (c == 'y' || c == 'Y')
+				{
+					editorSave();
+					if (E.dirty)
+					{
+						editorSetStatusMessage("Save aborted.");
+						return;
+					}
+				}
+					else if (c == 'n' || c == 'N')
+				{
+				}
+				else
+				{
+					editorSetStatusMessage("Aborted.");
+					return;
+				}
 			}
 			write(STDOUT_FILENO, "\x1b[2J", 4);
 			write(STDOUT_FILENO, "\x1b[H", 3);
@@ -971,7 +1003,8 @@ int main(int argc, char *argv[])
 		editorOpen(argv[1]);
 	}
 
-	editorSetStatusMessage("Help: Ctrl-O = save | Ctrl-X = quit | Ctrl-E = find | Ctrl Q/W to toggle whitespace on/off");
+//	editorSetStatusMessage("Help: Ctrl-O = save | Ctrl-X = quit | Ctrl-E = find | Ctrl Q/W to toggle whitespace on/off");
+	editorSetStatusMessage("Help: Ctrl-O = save | Ctrl-X = quit | Ctrl-E = find");
 
 	while (1)
 	{

@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -86,7 +87,7 @@ struct editorConfig
 	int dirty;
 	char *filename;
 //	int showWhiteSpace;
-	char statusmsg[80];
+	char statusmsg[128];
 	time_t statusmsg_time;
 	struct termios orig_termios;
 	ByteAction *undo_head;
@@ -143,6 +144,12 @@ void enableRawMode()
 	write(STDOUT_FILENO, "\x1b[?1049h", 8);
 }
 
+static inline int has_byte(void)
+{
+	struct pollfd pfd = {.fd = STDIN_FILENO, .events = POLLIN};
+	return poll(&pfd, 1, 0) > 0;
+}
+
 int editorReadKey()
 {
 	int nread;
@@ -155,12 +162,13 @@ int editorReadKey()
 	if (c == '\x1b')
 	{
 		char seq[3];
-
-		if (read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
-		if (read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
+		if (!has_byte() || read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
+		if (!has_byte() || read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
 
 		if (seq[0] == '[')
 		{
+			if (seq[1] == 'P') return DEL_KEY;
+
 			if (seq[1] >= '0' && seq[1] <= '9')
 			{
 				if (read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
@@ -190,15 +198,33 @@ int editorReadKey()
 					case 'F': return END_KEY;
 				}
 			}
-		}
-		else if (seq[0] == 'O')
+/*
+		if (read(STDIN_FILENO, &seq[0], 1) == 1 && read(STDIN_FILENO, &seq[1], 1) == 1)
 		{
+			if (seq[0] == '[' && seq[1] == 'P')
+			{
+			return DEL_KEY; // Successfully caught your Delete key
+			}
+		}
+*/
+		}
+		else if (seq[0] == 'O' || seq[0] == 'P')
+		{
+			if (seq[0] == 'P') return DEL_KEY;
 			switch (seq[1])
 			{
+				case 'P': return DEL_KEY;
 				case 'H': return HOME_KEY;
 				case 'F': return END_KEY;
 			}
 		}
+		if (seq[0] == '[') {
+		if (seq[1] >= '0' && seq[1] <= '9') {
+			char seq2;
+			if (read(STDIN_FILENO, &seq2, 1) != 1) return '\x1b';
+			if (seq2 == '~' && seq[1] == '3') return DEL_KEY;
+		}
+	}
 
 		return '\x1b';
 	}
@@ -535,6 +561,33 @@ void editorDelChar()
 	}
 }
 
+void editorDelCharForward(void)
+{
+	if (E.cy == E.numrows) return;
+
+	erow *row = &E.row[E.cy];
+
+	if (E.cx < row->size)
+	{
+		/* Delete character directly under/at the cursor position */
+		char deleted_ch = row->chars[E.cx];
+		push_byte_action(BYTE_DELETE, E.cy, E.cx, deleted_ch);
+
+		editorRowDelChar(row, E.cx);
+		/* Note: E.cx does not decrement because the text shifts left */
+	}
+	else if (E.cy < E.numrows - 1)
+	{
+		/* At the end of line: append next row to current row */
+		erow *next_row = &E.row[E.cy + 1];
+
+		push_byte_action(BYTE_DELETE, E.cy, E.cx, '\n');
+
+		editorRowAppendString(row, next_row->chars, next_row->size);
+		editorDelRow(E.cy + 1);
+	}
+}
+
 /*** file i/o ***/
 
 char *editorRowsToString(int *buflen)
@@ -762,11 +815,12 @@ void showWhiteSpace(struct abuf *ab, char *render, int len)
 	}
 }
 */
-
+/*
 void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 {					// Reason: Looks ugly.
 	int y;
 	int gutter_width = editorGetGutterWidth();
+	int usable_cols = E.screencols - gutter_width;
 
 	for (y = 0; y < E.screenrows; y++)
 	{
@@ -840,6 +894,104 @@ void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 		abAppend(ab, "\r\n", 2);
 	}
 }
+*/
+
+void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
+{					// Reason: Looks ugly.
+	int y = 0;
+	int gutter_width = editorGetGutterWidth();
+	int usable_cols = E.screencols - gutter_width;
+	int filerow = E.rowoff;
+
+	while (y < E.screenrows)
+	{
+		if (filerow < E.numrows)
+		{
+			erow *row = &E.row[filerow];
+			int row_len = row->rsize;
+			int offset = 0;
+
+			/* Handle empty lines */
+			if (row_len == 0)
+			{
+				if (toggleLineNumberShow == 1) {
+					char buf[16];
+					int len = snprintf(buf, sizeof(buf), "%*d ", gutter_width - 1, filerow + 1);
+					abAppend(ab, "\x1b[90m", 5);
+					abAppend(ab, buf, len);
+					abAppend(ab, "\x1b[0m", 4);
+				} else {
+					for (int i = 0; i < gutter_width; i++) abAppend(ab, " ", 1);
+				}
+
+				abAppend(ab, "\x1b[K\r\n", 5);
+				y++;
+			}
+			/* Soft-wrap long lines across screen rows */
+			else
+			{
+				while (offset < row_len && y < E.screenrows)
+				{
+					if (toggleLineNumberShow == 1) {
+						if (offset == 0) {
+							/* First line segment gets line number */
+							char buf[16];
+							int len = snprintf(buf, sizeof(buf), "%*d ", gutter_width - 1, filerow + 1);
+							abAppend(ab, "\x1b[90m", 5);
+							abAppend(ab, buf, len);
+							abAppend(ab, "\x1b[0m", 4);
+						} else {
+							/* Wrapped continuation lines get empty gutter padding */
+							for (int i = 0; i < gutter_width; i++) abAppend(ab, " ", 1);
+						}
+					} else {
+						for (int i = 0; i < gutter_width; i++) abAppend(ab, " ", 1);
+					}
+
+					int chunk_len = row_len - offset;
+					if (chunk_len > usable_cols) chunk_len = usable_cols;
+
+					abAppend(ab, &row->render[offset], chunk_len);
+					abAppend(ab, "\x1b[K\r\n", 5);
+
+					offset += chunk_len;
+					y++;
+				}
+			}
+
+			filerow++; /* Move to next file row after processing all wrapped slices */
+		}
+		else
+		{
+			/* Screen rows past end of file (filerow >= E.numrows) */
+			if (E.numrows == 0 && y == E.screenrows / 3)
+			{
+				char welcome[80];
+				int welcomelen = snprintf(welcome,
+							sizeof(welcome),
+							"Cuki editor -- version %s",
+							CUKI_VERSION);
+				if (welcomelen > E.screencols)
+					welcomelen = E.screencols;
+				int padding = (E.screencols - welcomelen)/2;
+				if (padding)
+				{
+					abAppend(ab, "~", 1);
+					padding--;
+				}
+				while (padding--) abAppend(ab, " ", 1);
+				abAppend(ab, welcome, welcomelen);
+			}
+			else
+			{
+				abAppend(ab, "~", 1);
+			}
+
+			abAppend(ab, "\x1b[K\r\n", 5);
+			y++;
+		}
+	}
+}
 
 void editorDrawStatusBar(struct abuf *ab)
 {
@@ -879,6 +1031,7 @@ void editorDrawMessageBar(struct abuf *ab)
 		abAppend(ab, E.statusmsg, msglen);
 }
 
+/*
 void editorRefreshScreen()
 {
 	editorScroll();
@@ -899,7 +1052,53 @@ void editorRefreshScreen()
 						(	E.rx - E.coloff) + gutter_width + 1);
 	abAppend(&ab, buf, strlen(buf));
 
-	abAppend(&ab, "\x1b[?25h", 6);
+	abAppend(&ab, "\x1b[?25h", 6);		// show cursor
+
+	write(STDOUT_FILENO, ab.b, ab.len);
+	abFree(&ab);
+}
+*/
+
+void editorRefreshScreen()
+{
+	editorScroll();
+
+	struct abuf ab = ABUF_INIT;
+
+	abAppend(&ab, "\x1b[?25l", 6);
+	abAppend(&ab, "\x1b[H", 3);
+
+	editorDrawRows(&ab);
+	editorDrawStatusBar(&ab);
+	editorDrawMessageBar(&ab);
+
+	int gutter_width = editorGetGutterWidth();
+	int usable_cols = E.screencols - gutter_width - 1;
+
+	/* Calculate visual Y offset considering soft-wrapped lines above E.cy */
+	int visual_y = 0;
+	for (int i = E.rowoff; i < E.cy && i < E.numrows; i++) {
+		int rlen = E.row[i].rsize;
+		if (rlen == 0) {
+			visual_y++;
+		} else {
+			visual_y += (rlen + usable_cols - 1) / usable_cols;
+		}
+	}
+
+	/* Account for wraps inside the current row (E.cy) */
+	if (E.cy < E.numrows) {
+		visual_y += (E.rx / usable_cols);
+	}
+
+	int screen_y = visual_y + 1;
+	int screen_x = (E.rx % usable_cols) + gutter_width + 1;
+
+	char buf[32];
+	snprintf(buf, sizeof(buf), "\x1b[%d;%dH", screen_y, screen_x);
+	abAppend(&ab, buf, strlen(buf));
+
+	abAppend(&ab, "\x1b[?25h", 6); // show cursor
 
 	write(STDOUT_FILENO, ab.b, ab.len);
 	abFree(&ab);
@@ -985,6 +1184,30 @@ char *editorPrompt(char *prompt, void (*callback)(char *, int))
 	}
 }
 
+void editorGetScreenCursorPos(int *screen_x, int *screen_y) {
+    int gutter_width = editorGetGutterWidth();
+    int usable_cols = E.screencols - gutter_width;
+
+    /* Calculate visual row offset from top of screen (E.rowoff) */
+    int visual_y = 0;
+    for (int i = E.rowoff; i < E.cy; i++) {
+        if (i < E.numrows) {
+            int rlen = E.row[i].rsize;
+            int num_wrapped_lines = (rlen == 0) ? 1 : (rlen + usable_cols - 1) / usable_cols;
+            visual_y += num_wrapped_lines;
+        } else {
+            visual_y++;
+        }
+    }
+
+    /* Add wrapped lines within current row (E.cy) */
+    int current_row_rx = editorRowCxToRx(&E.row[E.cy], E.cx); // Handles tab expansions if used
+    visual_y += (current_row_rx / usable_cols);
+
+    *screen_x = (current_row_rx % usable_cols) + gutter_width + 1; // +1 for 1-based ANSI indexing
+    *screen_y = visual_y + 1; // +1 for 1-based ANSI indexing
+}
+
 void editorMoveCursor(int key)
 {
 	erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
@@ -1055,12 +1278,16 @@ void editorProcessKeypress()
 			editorSetStatusMessage("Redo");
 			break;
 
-		case CTRL_KEY('j'):
+		case CTRL_KEY('a'):
 			toggleLineNumberShow = 1;
 			break;
 
-		case CTRL_KEY('k'):
+		case CTRL_KEY('s'):
 			toggleLineNumberShow = 0;
+			break;
+
+		case CTRL_KEY('g'):
+			editorSetStatusMessage("Help: Ctrl: O = Save, X = Exit, W = Find, Z/Y = Undo/Redo, A/S = Line show on/off.");
 			break;
 
 		case CTRL_KEY('x'):
@@ -1105,7 +1332,7 @@ void editorProcessKeypress()
 				E.cx = E.row[E.cy].size;
 			break;
 
-		case CTRL_KEY('e'):
+		case CTRL_KEY('w'):
 			editorFind();
 			break;
 /*
@@ -1117,10 +1344,12 @@ void editorProcessKeypress()
 			E.showWhiteSpace = 0;
 			break;
 */
+		case DEL_KEY:
+			editorDelCharForward();
+			break;
+
 		case BACKSPACE:
 		case CTRL_KEY('h'):
-		case DEL_KEY:
-			if (c == DEL_KEY) editorMoveCursor(ARROW_RIGHT);
 			editorDelChar();
 			break;
 
@@ -1199,8 +1428,12 @@ int main(int argc, char *argv[])
 		editorOpen(argv[1]);
 	}
 
-//	editorSetStatusMessage("Help: Ctrl-O = save | Ctrl-X = quit | Ctrl-E = find | Ctrl Q/W to toggle whitespace on/off");
-	editorSetStatusMessage("Help: Ctrl-O = save | Ctrl-X = quit | Ctrl-E = find");
+	editorSetStatusMessage("Help: Ctrl: O = Save, X = Exit, W = Find, Z/Y = Undo/Redo, A/S = Line show on/off.");
+
+//	if (editorReadKey() == CTRL_KEY('g'))
+//	{
+//		editorSetStatusMessage("Help: Ctrl: O = Save, X = Exit, W = Find, Z/Y = Undo/Redo, A/S = Line show on/off.");
+//	}
 
 	while (1)
 	{

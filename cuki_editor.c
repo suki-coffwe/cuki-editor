@@ -61,6 +61,7 @@ struct editorConfig
 	erow *row;
 	int dirty;
 	char *filename;
+//	int showWhiteSpace;
 	char statusmsg[80];
 	time_t statusmsg_time;
 	struct termios orig_termios;
@@ -597,6 +598,26 @@ void editorScroll()
 		E.coloff = E.rx - E.screencols + 1;
 	}
 }
+/*
+void showWhiteSpace(struct abuf *ab, char *render, int len)
+{
+	for (int i = 0; i < len; i++)
+	{
+		if (render[i] == ' ')
+		{
+			abAppend(ab, ".", 1);
+		}
+		else if (render[i] == '\t')
+		{
+			abAppend(ab, ">", 1);
+		}
+		else
+		{
+			abAppend(ab, &render[i], 1);
+		}
+	}
+}
+*/
 
 void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 {					// Reason: Looks ugly.
@@ -636,6 +657,9 @@ void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 			if (len < 0) len  = 0;
 			if (len > E.screencols) len = E.screencols;
 			abAppend(ab, &E.row[filerow].render[E.coloff], len);
+//
+//			showWhiteSpace(ab, &E.row[filerow].render[E.coloff], len);
+//
 		}
 		abAppend(ab, "\x1b[K", 3);
 		abAppend(ab, "\r\n", 2);
@@ -712,6 +736,7 @@ void editorSetStatusMessage(const char *fmt, ...) {
 	va_end(ap);
 	E.statusmsg_time = time(NULL);
 }
+
 
 /*** input ***/
 
@@ -827,7 +852,7 @@ void editorProcessKeypress()
 			editorInsertNewline();
 			break;
 
-		case CTRL_KEY('q'):
+		case CTRL_KEY('x'):
 			if (E.dirty && quit_times > 0)
 			{
 				editorSetStatusMessage("WARNING!!! File has unsaved changes. "
@@ -840,7 +865,7 @@ void editorProcessKeypress()
 			exit(0);
 			break;
 
-		case CTRL_KEY('s'):
+		case CTRL_KEY('o'):
 			editorSave();
 			break;
 
@@ -853,10 +878,18 @@ void editorProcessKeypress()
 				E.cx = E.row[E.cy].size;
 			break;
 
-		case CTRL_KEY('f'):
+		case CTRL_KEY('e'):
 			editorFind();
 			break;
+/*
+		case CTRL_KEY('q'):
+			E.showWhiteSpace = 1;
+			break;
 
+		case CTRL_KEY('w'):
+			E.showWhiteSpace = 0;
+			break;
+*/
 		case BACKSPACE:
 		case CTRL_KEY('h'):
 		case DEL_KEY:
@@ -884,20 +917,25 @@ void editorProcessKeypress()
 			break;
 		}
 
-			case ARROW_UP:
-			case ARROW_DOWN:
-			case ARROW_LEFT:
-			case ARROW_RIGHT:
-				editorMoveCursor(c);
-				break;
+		case ARROW_UP:
+		case ARROW_DOWN:
+		case ARROW_LEFT:
+		case ARROW_RIGHT:
+			editorMoveCursor(c);
+			break;
 
-			case CTRL_KEY('l'):
-			case '\x1b':
-				break;
+		case CTRL_KEY('l'):
+		case '\x1b':
+			break;
 
-			default:
+		case '\t':
+			editorInsertChar('\t');
+			break;
+
+		default:
+			if (isprint(c))
 				editorInsertChar(c);
-				break;
+			break;
 	}
 
 	quit_times = CUKI_QUIT_TIMES;
@@ -916,6 +954,7 @@ void initEditor()
 	E.row = NULL;
 	E.dirty = 0;
 	E.filename = NULL;
+//	E.showWhiteSpace = 0;
 	E.statusmsg[0] = '\0';
 	E.statusmsg_time = 0;
 
@@ -932,7 +971,7 @@ int main(int argc, char *argv[])
 		editorOpen(argv[1]);
 	}
 
-	editorSetStatusMessage("Help: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
+	editorSetStatusMessage("Help: Ctrl-O = save | Ctrl-X = quit | Ctrl-E = find | Ctrl Q/W to toggle whitespace on/off");
 
 	while (1)
 	{

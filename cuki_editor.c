@@ -21,7 +21,6 @@
 
 #define CUKI_VERSION "0.0.1"
 #define TAB_LENGTH 8
-#define CUKI_QUIT_TIMES 3
 
 #define CTRL_KEY(K) ((K) & 0x1f)
 
@@ -39,6 +38,13 @@ enum editorKey
 	PAGE_DOWN
 };
 
+// ENUM for UNDO/REDO:
+typedef enum
+{
+	BYTE_INSERT,	// Inserted 1 byte.
+	BYTE_DELETE	// Deleted 1 byte.
+} ByteActionType;
+
 /*** data ***/
 
 typedef struct erow
@@ -48,6 +54,19 @@ typedef struct erow
 	char *chars;
 	char *render;
 } erow;
+
+// STRUCT for UNDO/REDO:
+typedef struct ByteAction
+{
+	ByteActionType type;
+
+	int row;			// Buffer row index.
+	int col;			// Charcter offset inside the row.
+	char ch;			// The exact byte inserted / removed.
+
+	struct ByteAction *prev;
+	struct ByteAction *next;
+} ByteAction;
 
 struct editorConfig
 {
@@ -65,6 +84,9 @@ struct editorConfig
 	char statusmsg[80];
 	time_t statusmsg_time;
 	struct termios orig_termios;
+	ByteAction *undo_head;
+	ByteAction *undo_tail;
+	ByteAction *undo_current;
 };
 
 struct editorConfig E;
@@ -336,6 +358,99 @@ void editorRowDelChar(erow *row, int at)
 	E.dirty++;
 }
 
+/*** undo/redo ***/
+
+void editorUndo(void) {
+	if (!E.undo_current) return;
+
+	ByteAction *act = E.undo_current;
+
+	/* Ensure row exists before modifying */
+	if (act->row < E.numrows) {
+		erow *row = &E.row[act->row];
+
+		if (act->type == BYTE_INSERT) {
+			/* Undo an insertion -> Delete the character directly from the row */
+			editorRowDelChar(row, act->col);
+			E.dirty++;
+		} 
+		else if (act->type == BYTE_DELETE) {
+			/* Undo a deletion -> Insert the character directly back into the row */
+			editorRowInsertChar(row, act->col, act->ch);
+			E.dirty++;
+		}
+
+		/* Move cursor to action position */
+		E.cy = act->row;
+		E.cx = act->col;
+	}
+
+	E.undo_current = act->prev;
+}
+
+void editorRedo(void) {
+	ByteAction *act = E.undo_current ? E.undo_current->next : E.undo_head;
+	if (!act) return;
+
+	if (act->row < E.numrows) {
+		erow *row = &E.row[act->row];
+
+		if (act->type == BYTE_INSERT) {
+			/* Redo insertion -> Re-insert the character into the row */
+			editorRowInsertChar(row, act->col, act->ch);
+			E.dirty++;
+		} else if (act->type == BYTE_DELETE) {
+			/* Redo deletion -> Delete the character from the row */
+			editorRowDelChar(row, act->col);
+			E.dirty++;
+		}
+
+		/* Move cursor to action position */
+		E.cy = act->row;
+		E.cx = (act->type == BYTE_INSERT) ? act->col + 1 : act->col;
+	}
+
+	E.undo_current = act;
+}
+
+
+void push_byte_action(ByteActionType type, int row, int col, char ch) {
+	/* Truncate forward redo history if we are in the middle of the stack */
+	ByteAction *curr = E.undo_current ? E.undo_current->next : E.undo_head;
+	while (curr) {
+		ByteAction *next = curr->next;
+		free(curr);
+		curr = next;
+	}
+
+	if (E.undo_current) {
+		E.undo_current->next = NULL;
+		E.undo_tail = E.undo_current;
+	} else if (E.undo_head) {
+		/* If undo_current is NULL, we undid everything; clear history */
+		E.undo_head = NULL;
+		E.undo_tail = NULL;
+	}
+
+	/* Allocate new action */
+	ByteAction *new_action = malloc(sizeof(ByteAction));
+	new_action->type = type;
+	new_action->row = row;
+	new_action->col = col;
+	new_action->ch = ch;
+	new_action->prev = E.undo_tail;
+	new_action->next = NULL;
+
+	if (E.undo_tail) {
+		E.undo_tail->next = new_action;
+	} else {
+		E.undo_head = new_action;
+	}
+
+	E.undo_tail = new_action;
+	E.undo_current = new_action;
+}
+
 /*** editor operations ***/
 
 
@@ -346,6 +461,8 @@ void editorInsertChar(int c)
 		editorInsertRow(E.numrows, "", 0);
 	}
 	editorRowInsertChar(&E.row[E.cy], E.cx, c);
+	/* Right before or after inserting 'c' into E.row[cy] */
+	push_byte_action(BYTE_INSERT, E.cy, E.cx, (char)c);
 	E.cx++;
 }
 
@@ -369,6 +486,7 @@ void editorInsertNewline()
 	E.cx = 0;
 }
 
+/*
 void editorDelChar()
 {
 	if (E.cy == E.numrows) return;
@@ -376,6 +494,30 @@ void editorDelChar()
 
 	erow *row = &E.row[E.cy];
 	if (E.cx > 0) {
+		editorRowDelChar(row, E.cx - 1);
+		E.cx--;
+	}
+	else
+	{
+		E.cx = E.row[E.cy - 1].size;
+		editorRowAppendString(&E.row[E.cy - 1], row->chars, row->size);
+		editorDelRow(E.cy);
+		E.cy--;
+	}
+}
+*/
+
+void editorDelChar()
+{
+	if (E.cy == E.numrows) return;
+	if (E.cx == 0 && E.cy == 0) return;
+
+	erow *row = &E.row[E.cy];
+	if (E.cx > 0) {
+		/* Capture character BEFORE row deletion modifies the string */
+		char deleted_ch = row->chars[E.cx - 1];
+		push_byte_action(BYTE_DELETE, E.cy, E.cx - 1, deleted_ch);
+
 		editorRowDelChar(row, E.cx - 1);
 		E.cx--;
 	}
@@ -435,7 +577,6 @@ void editorOpen(char *filename)
 	E.dirty = 0;
 }
 
-
 void editorSave()
 {
 	if (E.filename == NULL)
@@ -470,9 +611,7 @@ void editorSave()
 	editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
 }
 
-
 /*** find ***/
-
 
 void editorFindCallback(char *query, int key)
 {
@@ -554,7 +693,6 @@ struct abuf
 
 #define ABUF_INIT {NULL, 0}
 
-
 void abAppend(struct abuf *ab, const char *s, int len)
 {
 	char *new = realloc(ab -> b, ab -> len + len);
@@ -564,7 +702,6 @@ void abAppend(struct abuf *ab, const char *s, int len)
 	ab -> b = new;
 	ab -> len += len;
 }
-
 
 void abFree(struct abuf *ab)
 {
@@ -599,6 +736,7 @@ void editorScroll()
 		E.coloff = E.rx - E.screencols + 1;
 	}
 }
+
 /*
 void showWhiteSpace(struct abuf *ab, char *render, int len)
 {
@@ -702,7 +840,6 @@ void editorDrawMessageBar(struct abuf *ab)
 	abAppend(ab, "\x1b[K", 3);
 	int msglen = strlen(E.statusmsg);
 	if (msglen > E.screencols) msglen = E.screencols;
-//	if (msglen && time(NULL) - E.statusmsg_time < 5)	//This is for timeout check, not currently needed and is replaced by no timeout.
 	if (msglen)
 		abAppend(ab, E.statusmsg, msglen);
 }
@@ -736,7 +873,6 @@ void editorSetStatusMessage(const char *fmt, ...) {
 	va_start(ap, fmt);
 	vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
 	va_end(ap);
-//	E.statusmsg_time = time(NULL);		//I hate timeouts!
 }
 
 
@@ -844,8 +980,6 @@ void editorMoveCursor(int key)
 
 void editorProcessKeypress()
 {
-	static int quit_times = CUKI_QUIT_TIMES;
-
 	int c = editorReadKey();
 
 	switch (c)
@@ -854,20 +988,17 @@ void editorProcessKeypress()
 			editorInsertNewline();
 			break;
 
-/*
-		case CTRL_KEY('x'):
-			if (E.dirty && quit_times > 0)
-			{
-				editorSetStatusMessage("WARNING!!! File has unsaved changes. "
-				"Press Ctrl-Q %d more times to quit.", quit_times);
-				quit_times--;
-				return;
-			}
-			write(STDOUT_FILENO, "\x1b[2J", 4);
-			write(STDOUT_FILENO, "\x1b[H", 3);
-			exit(0);
+		case CTRL_KEY('z'):
+			editorUndo();
+			editorSetStatusMessage("Undo");
 			break;
-*/
+
+		case CTRL_KEY('y'):
+			editorRedo();
+			editorSetStatusMessage("Redo");
+			break;
+
+
 		case CTRL_KEY('x'):
 			if (E.dirty)
 			{
@@ -970,7 +1101,6 @@ void editorProcessKeypress()
 			break;
 	}
 
-	quit_times = CUKI_QUIT_TIMES;
 }
 
 /*** init ***/
@@ -992,6 +1122,9 @@ void initEditor()
 
 	if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 	E.screenrows -= 2;
+	E.undo_head = NULL;
+	E.undo_tail = NULL;
+	E.undo_current = NULL;
 }
 
 int main(int argc, char *argv[])

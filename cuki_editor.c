@@ -20,12 +20,14 @@
 
 /*** toggles ***/
 
-int toggleLineNumberShow = 1;		// Start with line numbers showing on
+int toggleLineNumberShow = 1;		// Start with line numbers showing on.
 
 /*** defines ***/
 
 #define CUKI_VERSION "0.0.1"
-#define TAB_LENGTH 8
+#define TAB_LENGTH 4
+
+#define COOL_COLOUR "\x1b[38;5;250m"	//Light grey colour.
 
 #define CTRL_KEY(K) ((K) & 0x1f)
 
@@ -41,7 +43,8 @@ enum editorKey
 	END_KEY,
 	PAGE_UP,
 	PAGE_DOWN,
-	MOUSE_EVENT
+	MOUSE_EVENT,
+	NUM_5
 };
 
 // ENUM for UNDO/REDO:
@@ -86,7 +89,6 @@ struct editorConfig
 	erow *row;
 	int dirty;
 	char *filename;
-//	int showWhiteSpace;
 	char statusmsg[128];
 	time_t statusmsg_time;
 	struct termios orig_termios;
@@ -168,6 +170,7 @@ int editorReadKey()
 		if (seq[0] == '[')
 		{
 			if (seq[1] == 'P') return DEL_KEY;
+			if (seq[1] == 'E') return NUM_5;
 
 			if (seq[1] >= '0' && seq[1] <= '9')
 			{
@@ -518,7 +521,7 @@ void editorInsertChar(int c)
 	E.cx++;
 }
 
-void editorInsertNewline()
+void editorInsertNewline(void)
 {
 	if (E.cx == 0)
 	{
@@ -528,12 +531,42 @@ void editorInsertNewline()
 	else
 	{
 		erow *row = &E.row[E.cy];
+
+		// 1. Calculate leading whitespace on the current line
+		int indent_len = 0;
+		while (indent_len < row->size && (row->chars[indent_len] == ' ' || row->chars[indent_len] == '\t'))
+		{
+			indent_len++;
+		}
+
+		// 2. Split line at current cursor position
 		editorInsertRow(E.cy + 1, &row->chars[E.cx], row->size - E.cx);
 		row = &E.row[E.cy];
 		row->size = E.cx;
 		row->chars[row->size] = '\0';
 		editorUpdateRow(row);
+
+		// 3. Prepend leading whitespace to the newly created line
+		if (indent_len > 0) {
+			erow *new_row = &E.row[E.cy + 1];
+			new_row->chars = realloc(new_row->chars, new_row->size + indent_len + 1);
+			
+			/* Shift existing contents right */
+			memmove(&new_row->chars[indent_len], new_row->chars, new_row->size + 1);
+			
+			/* Copy the indentation chars */
+			memcpy(new_row->chars, E.row[E.cy].chars, indent_len);
+			new_row->size += indent_len;
+			editorUpdateRow(new_row);
+		}
+
+		// 4. Position cursor on the new line past the indent
+		E.cy++;
+		E.cx = indent_len;
+		E.dirty++;
+		return;
 	}
+
 	E.cy++;
 	E.cx = 0;
 }
@@ -795,107 +828,6 @@ void editorScroll()
 	}
 }
 
-/*
-void showWhiteSpace(struct abuf *ab, char *render, int len)
-{
-	for (int i = 0; i < len; i++)
-	{
-		if (render[i] == ' ')
-		{
-			abAppend(ab, ".", 1);
-		}
-		else if (render[i] == '\t')
-		{
-			abAppend(ab, ">", 1);
-		}
-		else
-		{
-			abAppend(ab, &render[i], 1);
-		}
-	}
-}
-*/
-/*
-void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
-{					// Reason: Looks ugly.
-	int y;
-	int gutter_width = editorGetGutterWidth();
-	int usable_cols = E.screencols - gutter_width;
-
-	for (y = 0; y < E.screenrows; y++)
-	{
-		int filerow = y + E.rowoff;
-
-		if (filerow < E.numrows)
-		{
-			if (toggleLineNumberShow == 1)
-			{
-				char buf[16];
-				int len = snprintf(buf, sizeof(buf), "%*d ", gutter_width - 1, filerow + 1);
-
-				abAppend(ab, "\x1b[90m", 5);
-				abAppend(ab, buf, len);
-				abAppend(ab, "\x1b[0m", 4);
-			}
-			else
-			{
-				// Keep alignment intact when line numbers are hidden
-				for (int i = 0; i < gutter_width; i++)
-				{
-					abAppend(ab, " ", 1);
-				}
-			}
-
-			int row_len = E.row[filerow].rsize - E.coloff;
-			if (row_len < 0) row_len = 0;
-			if (row_len > E.screencols - gutter_width)
-			{
-				row_len = E.screencols - gutter_width;
-			}
-			if (row_len > 0)
-			{
-				abAppend(ab, &E.row[filerow].render[E.coloff], row_len);
-			}
-		}
-
-//		if (filerow >= E.numrows)
-		else
-		{
-			if (E.numrows == 0 && y == E.screenrows / 3)
-			{
-				char welcome[80];
-				int welcomelen = snprintf(welcome,
-							sizeof(welcome),
-							"Cuki editor -- version %s",
-							CUKI_VERSION);
-				if (welcomelen > E.screencols)
-					welcomelen = E.screencols;
-				int padding = (E.screencols - welcomelen)/2;
-				if (padding)
-				{
-					abAppend(ab, "~", 1);
-					padding--;
-				}
-				while (padding--) abAppend(ab, " ", 1);
-				abAppend(ab, welcome, welcomelen);
-			}
-
-			else
-			{
-				abAppend(ab, "~", 1);
-			}
-		}
-
-//
-//			showWhiteSpace(ab, &E.row[filerow].render[E.coloff], len);
-//
-
-		abAppend(ab, "\x1b[K", 3);
-		abAppend(ab, "\r\n", 2);
-	}
-}
-*/
-
 void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 {					// Reason: Looks ugly.
 	int y = 0;
@@ -952,6 +884,9 @@ void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 					if (chunk_len > usable_cols) chunk_len = usable_cols;
 
 					abAppend(ab, &row->render[offset], chunk_len);
+
+
+
 					abAppend(ab, "\x1b[K\r\n", 5);
 
 					offset += chunk_len;
@@ -1030,34 +965,6 @@ void editorDrawMessageBar(struct abuf *ab)
 	if (msglen)
 		abAppend(ab, E.statusmsg, msglen);
 }
-
-/*
-void editorRefreshScreen()
-{
-	editorScroll();
-
-	struct abuf ab = ABUF_INIT;
-
-	abAppend(&ab, "\x1b[?25l", 6);
-	abAppend(&ab, "\x1b[H", 3);
-
-	editorDrawRows(&ab);
-	editorDrawStatusBar(&ab);
-	editorDrawMessageBar(&ab);
-
-	int gutter_width = editorGetGutterWidth();
-	char buf[32];
-
-	snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (	E.cy - E.rowoff) + 1,
-						(	E.rx - E.coloff) + gutter_width + 1);
-	abAppend(&ab, buf, strlen(buf));
-
-	abAppend(&ab, "\x1b[?25h", 6);		// show cursor
-
-	write(STDOUT_FILENO, ab.b, ab.len);
-	abFree(&ab);
-}
-*/
 
 void editorRefreshScreen()
 {
@@ -1185,27 +1092,27 @@ char *editorPrompt(char *prompt, void (*callback)(char *, int))
 }
 
 void editorGetScreenCursorPos(int *screen_x, int *screen_y) {
-    int gutter_width = editorGetGutterWidth();
-    int usable_cols = E.screencols - gutter_width;
+		int gutter_width = editorGetGutterWidth();
+		int usable_cols = E.screencols - gutter_width;
 
-    /* Calculate visual row offset from top of screen (E.rowoff) */
-    int visual_y = 0;
-    for (int i = E.rowoff; i < E.cy; i++) {
-        if (i < E.numrows) {
-            int rlen = E.row[i].rsize;
-            int num_wrapped_lines = (rlen == 0) ? 1 : (rlen + usable_cols - 1) / usable_cols;
-            visual_y += num_wrapped_lines;
-        } else {
-            visual_y++;
-        }
-    }
+		/* Calculate visual row offset from top of screen (E.rowoff) */
+		int visual_y = 0;
+		for (int i = E.rowoff; i < E.cy; i++) {
+				if (i < E.numrows) {
+						int rlen = E.row[i].rsize;
+						int num_wrapped_lines = (rlen == 0) ? 1 : (rlen + usable_cols - 1) / usable_cols;
+						visual_y += num_wrapped_lines;
+				} else {
+						visual_y++;
+				}
+		}
 
-    /* Add wrapped lines within current row (E.cy) */
-    int current_row_rx = editorRowCxToRx(&E.row[E.cy], E.cx); // Handles tab expansions if used
-    visual_y += (current_row_rx / usable_cols);
+		/* Add wrapped lines within current row (E.cy) */
+		int current_row_rx = editorRowCxToRx(&E.row[E.cy], E.cx); // Handles tab expansions if used
+		visual_y += (current_row_rx / usable_cols);
 
-    *screen_x = (current_row_rx % usable_cols) + gutter_width + 1; // +1 for 1-based ANSI indexing
-    *screen_y = visual_y + 1; // +1 for 1-based ANSI indexing
+		*screen_x = (current_row_rx % usable_cols) + gutter_width + 1; // +1 for 1-based ANSI indexing
+		*screen_y = visual_y + 1; // +1 for 1-based ANSI indexing
 }
 
 void editorMoveCursor(int key)
@@ -1267,6 +1174,19 @@ void editorProcessKeypress()
 		case '\r':
 			editorInsertNewline();
 			break;
+
+		case NUM_5:
+		{
+				char *s = "printf(\"\");";
+				while (*s)
+				{
+					editorInsertChar(*s++);
+				}
+				editorMoveCursor(ARROW_LEFT);
+				editorMoveCursor(ARROW_LEFT);
+				editorMoveCursor(ARROW_LEFT);
+				break;
+		}
 
 		case CTRL_KEY('z'):
 			editorUndo();
@@ -1335,15 +1255,7 @@ void editorProcessKeypress()
 		case CTRL_KEY('w'):
 			editorFind();
 			break;
-/*
-		case CTRL_KEY('q'):
-			E.showWhiteSpace = 1;
-			break;
 
-		case CTRL_KEY('w'):
-			E.showWhiteSpace = 0;
-			break;
-*/
 		case DEL_KEY:
 			editorDelCharForward();
 			break;
@@ -1429,11 +1341,6 @@ int main(int argc, char *argv[])
 	}
 
 	editorSetStatusMessage("Help: Ctrl: O = Save, X = Exit, W = Find, Z/Y = Undo/Redo, A/S = Line show on/off.");
-
-//	if (editorReadKey() == CTRL_KEY('g'))
-//	{
-//		editorSetStatusMessage("Help: Ctrl: O = Save, X = Exit, W = Find, Z/Y = Undo/Redo, A/S = Line show on/off.");
-//	}
 
 	while (1)
 	{

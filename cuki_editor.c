@@ -17,6 +17,10 @@
 #include <time.h>
 #include <unistd.h>
 
+/*** toggles ***/
+
+int toggleLineNumberShow = 0;
+
 /*** defines ***/
 
 #define CUKI_VERSION "0.0.1"
@@ -35,7 +39,8 @@ enum editorKey
 	HOME_KEY,
 	END_KEY,
 	PAGE_UP,
-	PAGE_DOWN
+	PAGE_DOWN,
+	MOUSE_EVENT
 };
 
 // ENUM for UNDO/REDO:
@@ -361,21 +366,25 @@ void editorRowDelChar(erow *row, int at)
 
 /*** undo/redo ***/
 
-void editorUndo(void) {
+void editorUndo(void)
+{
 	if (!E.undo_current) return;
 
 	ByteAction *act = E.undo_current;
 
 	/* Ensure row exists before modifying */
-	if (act->row < E.numrows) {
+	if (act->row < E.numrows)
+	{
 		erow *row = &E.row[act->row];
 
-		if (act->type == BYTE_INSERT) {
+		if (act->type == BYTE_INSERT)
+		{
 			/* Undo an insertion -> Delete the character directly from the row */
 			editorRowDelChar(row, act->col);
 			E.dirty++;
 		} 
-		else if (act->type == BYTE_DELETE) {
+		else if (act->type == BYTE_DELETE)
+		{
 			/* Undo a deletion -> Insert the character directly back into the row */
 			editorRowInsertChar(row, act->col, act->ch);
 			E.dirty++;
@@ -389,18 +398,23 @@ void editorUndo(void) {
 	E.undo_current = act->prev;
 }
 
-void editorRedo(void) {
+void editorRedo(void)
+{
 	ByteAction *act = E.undo_current ? E.undo_current->next : E.undo_head;
 	if (!act) return;
 
-	if (act->row < E.numrows) {
+	if (act->row < E.numrows)
+	{
 		erow *row = &E.row[act->row];
 
-		if (act->type == BYTE_INSERT) {
+		if (act->type == BYTE_INSERT)
+		{
 			/* Redo insertion -> Re-insert the character into the row */
 			editorRowInsertChar(row, act->col, act->ch);
 			E.dirty++;
-		} else if (act->type == BYTE_DELETE) {
+		}
+		else if (act->type == BYTE_DELETE)
+		{
 			/* Redo deletion -> Delete the character from the row */
 			editorRowDelChar(row, act->col);
 			E.dirty++;
@@ -415,19 +429,24 @@ void editorRedo(void) {
 }
 
 
-void push_byte_action(ByteActionType type, int row, int col, char ch) {
+void push_byte_action(ByteActionType type, int row, int col, char ch)
+{
 	/* Truncate forward redo history if we are in the middle of the stack */
 	ByteAction *curr = E.undo_current ? E.undo_current->next : E.undo_head;
-	while (curr) {
+	while (curr)
+	{
 		ByteAction *next = curr->next;
 		free(curr);
 		curr = next;
 	}
 
-	if (E.undo_current) {
+	if (E.undo_current)
+	{
 		E.undo_current->next = NULL;
 		E.undo_tail = E.undo_current;
-	} else if (E.undo_head) {
+	}
+	else if (E.undo_head)
+	{
 		/* If undo_current is NULL, we undid everything; clear history */
 		E.undo_head = NULL;
 		E.undo_tail = NULL;
@@ -442,9 +461,12 @@ void push_byte_action(ByteActionType type, int row, int col, char ch) {
 	new_action->prev = E.undo_tail;
 	new_action->next = NULL;
 
-	if (E.undo_tail) {
+	if (E.undo_tail)
+	{
 		E.undo_tail->next = new_action;
-	} else {
+	}
+	else
+	{
 		E.undo_head = new_action;
 	}
 
@@ -485,27 +507,6 @@ void editorInsertNewline()
 	E.cy++;
 	E.cx = 0;
 }
-
-/*
-void editorDelChar()
-{
-	if (E.cy == E.numrows) return;
-	if (E.cx == 0 && E.cy == 0) return;
-
-	erow *row = &E.row[E.cy];
-	if (E.cx > 0) {
-		editorRowDelChar(row, E.cx - 1);
-		E.cx--;
-	}
-	else
-	{
-		E.cx = E.row[E.cy - 1].size;
-		editorRowAppendString(&E.row[E.cy - 1], row->chars, row->size);
-		editorDelRow(E.cy);
-		E.cy--;
-	}
-}
-*/
 
 void editorDelChar()
 {
@@ -769,12 +770,23 @@ void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 
 		if (filerow < E.numrows)
 		{
-			char buf[16];
-			int len = snprintf(buf, sizeof(buf), "%*d ", gutter_width - 1, filerow + 1);
+			if (toggleLineNumberShow == 1)
+			{
+				char buf[16];
+				int len = snprintf(buf, sizeof(buf), "%*d ", gutter_width - 1, filerow + 1);
 
-			abAppend(ab, "\x1b[90m", 5);
-			abAppend(ab, buf, len);
-			abAppend(ab, "\x1b[0m", 4);
+				abAppend(ab, "\x1b[90m", 5);
+				abAppend(ab, buf, len);
+				abAppend(ab, "\x1b[0m", 4);
+			}
+			else
+			{
+				// Keep alignment intact when line numbers are hidden
+				for (int i = 0; i < gutter_width; i++)
+				{
+					abAppend(ab, " ", 1);
+				}
+			}
 
 			int row_len = E.row[filerow].rsize - E.coloff;
 			if (row_len < 0) row_len = 0;
@@ -815,18 +827,11 @@ void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 				abAppend(ab, "~", 1);
 			}
 		}
-/*
-		else
-		{
-			int len = E.row[filerow].rsize - E.coloff;
-			if (len < 0) len  = 0;
-			if (len > E.screencols) len = E.screencols;
-			abAppend(ab, &E.row[filerow].render[E.coloff], len);
+
 //
 //			showWhiteSpace(ab, &E.row[filerow].render[E.coloff], len);
 //
-		}
-*/
+
 		abAppend(ab, "\x1b[K", 3);
 		abAppend(ab, "\r\n", 2);
 	}
@@ -896,7 +901,8 @@ void editorRefreshScreen()
 	abFree(&ab);
 }
 
-void editorSetStatusMessage(const char *fmt, ...) {
+void editorSetStatusMessage(const char *fmt, ...)
+{
 	va_list ap;
 	va_start(ap, fmt);
 	vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
@@ -905,15 +911,22 @@ void editorSetStatusMessage(const char *fmt, ...) {
 
 int editorGetGutterWidth(void)
 {
-    int digits = 1;
-    int max_rows = E.numrows;
-    while (max_rows >= 10) {
-        digits++;
-        max_rows /= 10;
-    }
-    /* Ensure a minimum width of 3 digits + 1 space separator */
-    if (digits < 3) digits = 3;
-    return digits + 1; 
+	if (toggleLineNumberShow)
+	{
+		int digits = 1;
+		int max_rows = E.numrows;
+		while (max_rows >= 10) {
+			digits++;
+			max_rows /= 10;
+		}
+		/* Ensure a minimum width of 3 digits + 1 space separator */
+		if (digits < 3) digits = 3;
+		return digits + 1; 
+	}
+	else
+	{
+		return 0;
+	}
 }
 
 /*** input ***/
@@ -1038,6 +1051,13 @@ void editorProcessKeypress()
 			editorSetStatusMessage("Redo");
 			break;
 
+		case CTRL_KEY('j'):
+			toggleLineNumberShow = 1;
+			break;
+
+		case CTRL_KEY('k'):
+			toggleLineNumberShow = 0;
+			break;
 
 		case CTRL_KEY('x'):
 			if (E.dirty)
@@ -1159,7 +1179,6 @@ void initEditor()
 //	E.showWhiteSpace = 0;
 	E.statusmsg[0] = '\0';
 	E.statusmsg_time = 0;
-
 	if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 	E.screenrows -= 2;
 	E.undo_head = NULL;

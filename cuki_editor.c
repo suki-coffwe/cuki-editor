@@ -19,7 +19,7 @@
 
 /*** toggles ***/
 
-int toggleLineNumberShow = 0;
+int toggleLineNumberShow = 1;		// Start with line numbers showing on
 
 /*** defines ***/
 
@@ -116,6 +116,8 @@ void die(const char *s)
 
 void disableRawMode()
 {
+	write(STDOUT_FILENO, "\x1b[?1049l", 8);
+
 	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == -1)
 	{
 		die("tcsetattr");
@@ -137,6 +139,8 @@ void enableRawMode()
 	raw.c_cc[VTIME] = 1;
 
 	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
+
+	write(STDOUT_FILENO, "\x1b[?1049h", 8);
 }
 
 int editorReadKey()

@@ -96,6 +96,7 @@ struct editorConfig E;
 void editorSetStatusMessage(const char *fmt, ...);
 void editorRefreshScreen();
 char *editorPrompt(char *prompt, void (*callback) (char *, int));
+int editorGetGutterWidth(void);
 
 /*** terminal ***/
 
@@ -453,7 +454,6 @@ void push_byte_action(ByteActionType type, int row, int col, char ch) {
 
 /*** editor operations ***/
 
-
 void editorInsertChar(int c)
 {
 	if (E.cy == E.numrows)
@@ -761,10 +761,35 @@ void showWhiteSpace(struct abuf *ab, char *render, int len)
 void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 {					// Reason: Looks ugly.
 	int y;
+	int gutter_width = editorGetGutterWidth();
+
 	for (y = 0; y < E.screenrows; y++)
 	{
 		int filerow = y + E.rowoff;
-		if (filerow >= E.numrows)
+
+		if (filerow < E.numrows)
+		{
+			char buf[16];
+			int len = snprintf(buf, sizeof(buf), "%*d ", gutter_width - 1, filerow + 1);
+
+			abAppend(ab, "\x1b[90m", 5);
+			abAppend(ab, buf, len);
+			abAppend(ab, "\x1b[0m", 4);
+
+			int row_len = E.row[filerow].rsize - E.coloff;
+			if (row_len < 0) row_len = 0;
+			if (row_len > E.screencols - gutter_width)
+			{
+				row_len = E.screencols - gutter_width;
+			}
+			if (row_len > 0)
+			{
+				abAppend(ab, &E.row[filerow].render[E.coloff], row_len);
+			}
+		}
+
+//		if (filerow >= E.numrows)
+		else
 		{
 			if (E.numrows == 0 && y == E.screenrows / 3)
 			{
@@ -790,6 +815,7 @@ void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 				abAppend(ab, "~", 1);
 			}
 		}
+/*
 		else
 		{
 			int len = E.row[filerow].rsize - E.coloff;
@@ -800,10 +826,10 @@ void editorDrawRows(struct abuf *ab)	// Remove "~" part of this later
 //			showWhiteSpace(ab, &E.row[filerow].render[E.coloff], len);
 //
 		}
+*/
 		abAppend(ab, "\x1b[K", 3);
 		abAppend(ab, "\r\n", 2);
 	}
-
 }
 
 void editorDrawStatusBar(struct abuf *ab)
@@ -857,9 +883,11 @@ void editorRefreshScreen()
 	editorDrawStatusBar(&ab);
 	editorDrawMessageBar(&ab);
 
+	int gutter_width = editorGetGutterWidth();
 	char buf[32];
+
 	snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (	E.cy - E.rowoff) + 1,
-						(	E.rx - E.coloff) + 1);
+						(	E.rx - E.coloff) + gutter_width + 1);
 	abAppend(&ab, buf, strlen(buf));
 
 	abAppend(&ab, "\x1b[?25h", 6);
@@ -875,6 +903,18 @@ void editorSetStatusMessage(const char *fmt, ...) {
 	va_end(ap);
 }
 
+int editorGetGutterWidth(void)
+{
+    int digits = 1;
+    int max_rows = E.numrows;
+    while (max_rows >= 10) {
+        digits++;
+        max_rows /= 10;
+    }
+    /* Ensure a minimum width of 3 digits + 1 space separator */
+    if (digits < 3) digits = 3;
+    return digits + 1; 
+}
 
 /*** input ***/
 
